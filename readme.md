@@ -1,4 +1,4 @@
-#My basic Encryption class
+# My basic Encryption class
 ```php
 $key = 'MY-SECRET-KEY';
 $encryption = new Encryption($key);
