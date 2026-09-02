@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace UmitYatarkalkmaz;
 
 use InvalidArgumentException;
+use LogicException;
 use SensitiveParameter;
 use SodiumException;
 
@@ -63,32 +64,29 @@ final class Encryption
     /** Encrypts a value for storage. The result is base64. */
     public function encrypt(#[SensitiveParameter] string $data): string
     {
-        return base64_encode($this->seal($data));
+        return self::encode($this->seal($data), false);
     }
 
     /** Returns the plaintext, or null when the input was tampered with or is not ours. */
     public function decrypt(string $data): ?string
     {
-        $raw = base64_decode($data, true);
+        $raw = self::decodeCanonical($data, false);
 
-        return $raw === false ? null : $this->open($raw);
+        return $raw === null ? null : $this->open($raw);
     }
 
     /** Encrypts a value for use in a URL. The result contains only [A-Za-z0-9_-]. */
     public function encryptForUrl(#[SensitiveParameter] string $data): string
     {
-        return rtrim(strtr(base64_encode($this->seal($data)), '+/', '-_'), '=');
+        return self::encode($this->seal($data), true);
     }
 
     /** Returns the plaintext, or null when the input was tampered with or is not ours. */
     public function decryptFromUrl(string $data): ?string
     {
-        $padded = strtr($data, '-_', '+/');
-        $padded .= str_repeat('=', (4 - strlen($padded) % 4) % 4);
+        $raw = self::decodeCanonical($data, true);
 
-        $raw = base64_decode($padded, true);
-
-        return $raw === false ? null : $this->open($raw);
+        return $raw === null ? null : $this->open($raw);
     }
 
     /** Keeps the key out of var_dump() and stack traces. */
@@ -97,7 +95,34 @@ final class Encryption
         return ['key' => '***'];
     }
 
-    private function seal(string $data): string
+    /**
+     * Serializing would copy the raw key into whatever holds the string — a
+     * session file, a cache entry, a log line. Construct from the key instead.
+     *
+     * @return array<string, mixed>
+     *
+     * @throws LogicException always
+     */
+    public function __serialize(): array
+    {
+        throw new LogicException(
+            'An Encryption instance holds a secret key and must not be serialized; store the key itself instead.',
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     *
+     * @throws LogicException always
+     */
+    public function __unserialize(array $data): void
+    {
+        throw new LogicException(
+            'An Encryption instance cannot be unserialized; construct it from the key instead.',
+        );
+    }
+
+    private function seal(#[SensitiveParameter] string $data): string
     {
         $nonce = random_bytes(self::NONCE_BYTES);
 
@@ -134,5 +159,45 @@ final class Encryption
         }
 
         return $plaintext === false ? null : $plaintext;
+    }
+
+    /** @param bool $url true for base64url without padding, false for standard base64 */
+    private static function encode(string $raw, bool $url): string
+    {
+        $encoded = base64_encode($raw);
+
+        return $url ? rtrim(strtr($encoded, '+/', '-_'), '=') : $encoded;
+    }
+
+    /**
+     * Decodes only the one spelling encode() would have produced, and returns
+     * null for every other spelling of the same bytes.
+     *
+     * base64_decode() in strict mode still accepts embedded whitespace, and it
+     * ignores the unused bits in a final character, so a single ciphertext has
+     * many accepted encodings. That turns an authenticated ciphertext back into
+     * a malleable string: a token can be reshaped in transit and still decrypt,
+     * which breaks any caller that treats the encoded form as an identity — a
+     * cache key, a replay list, a uniqueness check. Re-encoding and demanding a
+     * byte-identical match leaves exactly one accepted spelling.
+     *
+     * @param bool $url true for base64url without padding, false for standard base64
+     */
+    private static function decodeCanonical(string $data, bool $url): ?string
+    {
+        $standard = $data;
+
+        if ($url) {
+            $standard = strtr($standard, '-_', '+/');
+            $standard .= str_repeat('=', (4 - strlen($standard) % 4) % 4);
+        }
+
+        $raw = base64_decode($standard, true);
+
+        if ($raw === false || self::encode($raw, $url) !== $data) {
+            return null;
+        }
+
+        return $raw;
     }
 }

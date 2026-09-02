@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-09-02
+
+### Security
+
+- **The decode step accepted more than one spelling of a ciphertext.**
+  `base64_decode()` in strict mode still tolerates embedded whitespace and
+  ignores the unused bits of the final character, and neither decrypt method
+  checked the alphabet or the padding, so a token could be reshaped in transit —
+  whitespace inserted, `-`/`_` swapped for `+`/`/`, `=` added, a padding bit
+  flipped — and still decrypt to the same plaintext. `decrypt()` and
+  `decryptFromUrl()` now re-encode what they decoded and return `null` unless the
+  result is byte-identical to the input, so each ciphertext has exactly one
+  accepted encoding.
+- **`serialize()` wrote the raw key into the output.** `__debugInfo()` covers
+  `var_dump()` and `print_r()` but not serialization, so an instance stored in a
+  session or a cache carried the key with it. `__serialize()` and
+  `__unserialize()` now throw `LogicException`; store the key and construct from
+  it instead.
+- `seal()` marks its plaintext parameter `#[SensitiveParameter]`, so the value
+  being encrypted is redacted in stack traces too.
+
+### Fixed
+
+- The README passed `$_ENV['APP_ENCRYPTION_KEY']` straight to the constructor and
+  described the failure as `InvalidArgumentException`; an unset variable raises a
+  `TypeError`. The example now checks the variable first.
+
+### Added
+
+- A README section on what `#[SensitiveParameter]`, `__debugInfo()` and the
+  serialization guard actually cover — and the fact that the key is never zeroed.
+
 ## [2.0.0] - 2026-09-02
 
 ### Security
@@ -23,8 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   straight to OpenSSL as raw key material and zero-padded to 32 bytes, leaving
   most of the key empty. The constructor now requires a base64-encoded 32-byte
   key and refuses anything else; `generateKey()` produces one.
-- The key is marked `#[SensitiveParameter]` and hidden from `var_dump()`, so it
-  does not appear in stack traces or debug output.
+- The key is marked `#[SensitiveParameter]`, so stack traces show
+  `Object(SensitiveParameterValue)` in place of it, and `__debugInfo()` replaces
+  it with `***` in `var_dump()` and `print_r()`. It is still held in memory and
+  reachable by reflection; see the README for what this does and does not cover.
 
 ### Fixed
 

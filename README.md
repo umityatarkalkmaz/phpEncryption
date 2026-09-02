@@ -31,11 +31,20 @@ is not committed — and reuse it. A different key cannot read old ciphertexts,
 and losing the key loses the data.
 
 ```php
-$encryption = new Encryption($_ENV['APP_ENCRYPTION_KEY']);
+$key = $_ENV['APP_ENCRYPTION_KEY'] ?? null;
+
+if (!is_string($key)) {
+    throw new RuntimeException('APP_ENCRYPTION_KEY is not set.');
+}
+
+$encryption = new Encryption($key);
 ```
 
-The constructor throws `InvalidArgumentException` if the key is not base64 or
-does not decode to exactly 32 bytes.
+Check the variable before passing it. The constructor is typed `string`, so an
+unset `$_ENV['APP_ENCRYPTION_KEY']` raises a `TypeError`, not the
+`InvalidArgumentException` you would be catching. That exception is for a key
+that arrives as a string but is not base64, or does not decode to exactly 32
+bytes.
 
 ## Usage
 
@@ -61,6 +70,22 @@ if ($id === null) {
     return;
 }
 ```
+
+## Keeping the key out of your output
+
+The constructor parameter is marked `#[SensitiveParameter]`, so PHP prints
+`Object(SensitiveParameterValue)` instead of the key in any stack trace that
+crosses it. `__debugInfo()` replaces the key with `***` for `var_dump()` and
+`print_r()`, and `serialize()` throws a `LogicException` rather than writing the
+raw key into a session file, a cache entry or a log line.
+
+None of that is containment. The decoded key lives in the object for as long as
+the object does, and it is never zeroed: PHP strings are immutable and copied
+freely, so there is no point at which the bytes can be reliably overwritten. A
+core dump, a memory-reading debugger, a swap file, or `ReflectionProperty` still
+reach it. Treat process memory as readable by anything that can already run code
+in it, and keep the key out of the places you *can* control — version control,
+logs, and error pages.
 
 ## What this does not do
 

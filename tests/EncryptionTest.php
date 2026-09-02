@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace UmitYatarkalkmaz\Tests;
 
 use InvalidArgumentException;
+use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use UmitYatarkalkmaz\Encryption;
@@ -142,7 +143,111 @@ final class EncryptionTest extends TestCase
     public function testTheKeyDoesNotLeakThroughVarDump(): void
     {
         $key = Encryption::generateKey();
+        $raw = base64_decode($key, true);
 
-        self::assertStringNotContainsString($key, print_r(new Encryption($key), true));
+        // The property holds the decoded bytes, so asserting on the base64
+        // string would pass even with __debugInfo() deleted.
+        self::assertIsString($raw);
+
+        $dumped = print_r(new Encryption($key), true);
+
+        self::assertStringNotContainsString($raw, $dumped);
+        self::assertStringNotContainsString($key, $dumped);
+    }
+
+    public function testAnInstanceCannotBeSerialized(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessageMatches('/must not be serialized/');
+
+        serialize(new Encryption(Encryption::generateKey()));
+    }
+
+    public function testAnInstanceCannotBeUnserialized(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessageMatches('/cannot be unserialized/');
+
+        unserialize('O:27:"UmitYatarkalkmaz\\Encryption":1:{s:3:"key";s:3:"abc";}');
+    }
+
+    public function testStorageDecryptAcceptsOnlyTheEncodingEncryptProduces(): void
+    {
+        $encrypted = $this->encryptUsingAlphabetSpecificCharacters('ab', false);
+
+        self::assertSame('ab', $this->encryption->decrypt($encrypted));
+
+        // Whitespace: base64_decode() tolerates it even in strict mode.
+        self::assertNull($this->encryption->decrypt(
+            substr($encrypted, 0, 8) . "\n" . substr($encrypted, 8),
+        ));
+        self::assertNull($this->encryption->decrypt(' ' . $encrypted));
+
+        // The other alphabet decodes to the same bytes.
+        self::assertNull($this->encryption->decrypt(strtr($encrypted, '+/', '-_')));
+
+        // Padding beyond what the length calls for.
+        self::assertNull($this->encryption->decrypt($encrypted . '='));
+        self::assertNull($this->encryption->decrypt(rtrim($encrypted, '=')));
+
+        // The final character carries bits no byte of the plaintext uses.
+        self::assertNull($this->encryption->decrypt(self::flipUnusedPaddingBit($encrypted, false)));
+    }
+
+    public function testUrlDecryptAcceptsOnlyTheEncodingEncryptForUrlProduces(): void
+    {
+        $token = $this->encryptUsingAlphabetSpecificCharacters('ab', true);
+
+        self::assertSame('ab', $this->encryption->decryptFromUrl($token));
+
+        self::assertNull($this->encryption->decryptFromUrl(
+            substr($token, 0, 8) . "\n" . substr($token, 8),
+        ));
+        self::assertNull($this->encryption->decryptFromUrl(' ' . $token));
+
+        // The standard alphabet is not the one encryptForUrl() emits.
+        self::assertNull($this->encryption->decryptFromUrl(strtr($token, '-_', '+/')));
+
+        // encryptForUrl() strips padding, so any '=' is somebody else's addition.
+        self::assertNull($this->encryption->decryptFromUrl($token . '='));
+        self::assertNull($this->encryption->decryptFromUrl($token . '=='));
+
+        self::assertNull($this->encryption->decryptFromUrl(self::flipUnusedPaddingBit($token, true)));
+    }
+
+    /**
+     * Encrypts until the result actually uses a character the other alphabet
+     * spells differently, so swapping alphabets is a real change to test.
+     */
+    private function encryptUsingAlphabetSpecificCharacters(string $plaintext, bool $url): string
+    {
+        for ($attempt = 0; $attempt < 200; $attempt++) {
+            $encoded = $url
+                ? $this->encryption->encryptForUrl($plaintext)
+                : $this->encryption->encrypt($plaintext);
+
+            if (strpbrk($encoded, $url ? '-_' : '+/') !== false) {
+                return $encoded;
+            }
+        }
+
+        self::fail('No ciphertext used an alphabet-specific character in 200 attempts.');
+    }
+
+    /**
+     * Rewrites the last character carrying data so it decodes to the same bytes
+     * with the unused low bits set, which is what a canonical check must catch.
+     */
+    private static function flipUnusedPaddingBit(string $encoded, bool $url): string
+    {
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789' . ($url ? '-_' : '+/');
+        $position = strlen(rtrim($encoded, '=')) - 1;
+        $index = strpos($alphabet, $encoded[$position]);
+
+        self::assertIsInt($index);
+
+        $encoded[$position] = $alphabet[$index ^ 1];
+
+        return $encoded;
     }
 }
